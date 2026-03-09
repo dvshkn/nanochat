@@ -5,9 +5,9 @@
 #
 
 
-# See speedrun.sh for more comments
-# Usage: ./miniseries.sh [series_name]
-# Example: ./miniseries.sh jan11
+# Like miniseries.sh but with layer stacking
+# Usage: ./stackseries.sh [series_name]
+# Example: ./stackseries.sh jan11
 # Default series name is today's date (e.g., jan11)
 
 export OMP_NUM_THREADS=1
@@ -32,15 +32,15 @@ fi
 
 # Series name: from arg, env var, or default to today's date (e.g., jan11)
 SERIES_NAME="${1:-${SERIES_NAME:-$(date +%b%d | tr '[:upper:]' '[:lower:]')}}"
-# Depths to train (the "miniseries")
-DEPTHS=(16)
+# Depths to train
+DEPTHS=(12 16 20)
 # Hardware
 # NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 NPROC_PER_NODE=1
 # Logging
-WANDB_RUN="${WANDB_RUN:-${SERIES_NAME}_miniseries}"
+WANDB_RUN="${WANDB_RUN:-${SERIES_NAME}_stackseries}"
 
-RESULTS_DIR="$NANOCHAT_BASE_DIR/${SERIES_NAME}_miniseries_results"
+RESULTS_DIR="$NANOCHAT_BASE_DIR/${SERIES_NAME}_stackseries_results"
 mkdir -p "$RESULTS_DIR"
 RESULTS_FILE="$RESULTS_DIR/results.csv"
 
@@ -54,7 +54,7 @@ log() {
 }
 
 log "=============================================="
-log "${SERIES_NAME} Miniseries Training"
+log "${SERIES_NAME} Stackseries Training"
 log "=============================================="
 
 for d in "${DEPTHS[@]}"; do
@@ -71,7 +71,7 @@ for d in "${DEPTHS[@]}"; do
     DEPTH_2=${d}
     DEPTH_DESC_2="d${DEPTH_2}"
     TAG_2="${SERIES_NAME}_stackseries_${DEPTH_DESC_2}"
-    DEPTH_1=$((${d} / ${G}))
+    DEPTH_1=$((d / G))
     DEPTH_DESC_1="d${DEPTH_1}s${DEPTH_2}"
     TAG_1="${SERIES_NAME}_stackseries_${DEPTH_DESC_1}"
 
@@ -89,47 +89,49 @@ for d in "${DEPTHS[@]}"; do
 
     # Train at smaller size ---------------------------------------------------
 
-    # log "Training ${DEPTH_DESC_1}"
-    # START_TIME=$(date +%s)
+    log "Training ${DEPTH_DESC_1}"
+    START_TIME=$(date +%s)
 
-    # torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- \
-    #     --depth=$DEPTH_1 \
-    #     --final-depth=$DEPTH_2 \
-    #     --run="${WANDB_RUN}_${DEPTH_DESC_1}" \
-    #     --model-tag="${TAG_1}" \
-    #     --core-metric-every=999999 \
-    #     --core-metric-max-per-task=-1 \
-    #     --sample-every=-1 \
-    #     --save-every=-1 \
-    #     $DEVICE_BATCH_SIZE_ARG \
-    #     2>&1 | tee "$RESULTS_DIR/${TAG_1}_train.log"
+    torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- \
+        --depth=$DEPTH_1 \
+        --final-depth=$DEPTH_2 \
+        --run="${WANDB_RUN}_${DEPTH_DESC_1}" \
+        --model-tag="${TAG_1}" \
+        --core-metric-every=999999 \
+        --core-metric-max-per-task=-1 \
+        --sample-every=-1 \
+        --save-every=-1 \
+        $DEVICE_BATCH_SIZE_ARG \
+        2>&1 | tee "$RESULTS_DIR/${TAG_1}_train.log"
 
-    # if [ ${PIPESTATUS[0]} -ne 0 ]; then
-    #     exit $?
-    # fi
+    if [ ${PIPESTATUS[0]} -ne 0 ]; then
+        exit 1
+    fi
 
-    # END_TIME=$(date +%s)
-    # TRAIN_TIME=$((END_TIME - START_TIME))
+    END_TIME=$(date +%s)
+    TRAIN_TIME=$((END_TIME - START_TIME))
 
-    # # Extract stats from log
-    # LOG_FILE="$RESULTS_DIR/${TAG_1}_train.log"
-    # NUM_PARAMS=$(grep "Number of parameters:" "$LOG_FILE" | tail -1 | grep -oP '[\d,]+' | head -1 | tr -d ',')
-    # NUM_SCALING_PARAMS=$(grep "Number of parameters:" "$LOG_FILE" | tail -1 | grep -oP 'scaling: [\d,]+' | grep -oP '[\d,]+' | tr -d ',')
-    # NUM_ITERS=$(grep "Calculated number of iterations" "$LOG_FILE" | tail -1 | sed 's/.*: //' | tr -d ',')
-    # TOKENS_TRAINED=$((NUM_ITERS * 524288))
-    # PARAM_DATA_RATIO=$(python -c "print(f'{$TOKENS_TRAINED / $NUM_SCALING_PARAMS:.2f}')")
-    # MODEL_DIM=$((d * 64))
-    # VAL_BPB=$(grep "Validation bpb:" "$LOG_FILE" | tail -1 | grep -oP '[\d.]+$')
-    # CORE_SCORE=$(grep "CORE metric:" "$LOG_FILE" | tail -1 | awk '{print $NF}')
+    # Extract stats from log
+    LOG_FILE="$RESULTS_DIR/${TAG_1}_train.log"
+    NUM_PARAMS=$(grep "Parameter counts:" -A 6 "$LOG_FILE" | grep -oP 'total\s+: [\d,]+' | grep -oP '[\d,]+' | tr -d ',')
+    NUM_LM_HEAD_PARAMS=$(grep "Parameter counts:" -A 6 "$LOG_FILE" | grep -oP 'lm_head\s+: [\d,]+' | grep -oP '[\d,]+' | tr -d ',')
+    NUM_TX_MATRIX_PARAMS=$(grep "Parameter counts:" -A 6 "$LOG_FILE" | grep -oP 'transformer_matrices\s+: [\d,]+' | grep -oP '[\d,]+' | tr -d ',')
+    NUM_SCALING_PARAMS=$((NUM_LM_HEAD_PARAMS + NUM_TX_MATRIX_PARAMS))
+    NUM_ITERS=$(grep "Calculated number of iterations" "$LOG_FILE" | tail -1 | sed 's/.*: //' | tr -d ',')
+    TOKENS_TRAINED=$((NUM_ITERS * 524288))
+    PARAM_DATA_RATIO=$(python -c "print(f'{$TOKENS_TRAINED / $NUM_SCALING_PARAMS:.2f}')")
+    MODEL_DIM=$((d * 64))
+    VAL_BPB=$(grep "Validation bpb:" "$LOG_FILE" | tail -1 | grep -oP '[\d.]+$')
+    CORE_SCORE=$(grep "CORE metric:" "$LOG_FILE" | tail -1 | awk '{print $NF}')
 
-    # if [ -z "$CORE_SCORE" ]; then
-    #     CORE_SCORE="0.0"
-    # fi
+    if [ -z "$CORE_SCORE" ]; then
+        CORE_SCORE="0.0"
+    fi
 
-    # log "  d=$d: params=$NUM_PARAMS, scaling=$NUM_SCALING_PARAMS, ratio=$PARAM_DATA_RATIO, bpb=$VAL_BPB, CORE=$CORE_SCORE, time=${TRAIN_TIME}s"
+    log "  d=$DEPTH_1: params=$NUM_PARAMS, scaling=$NUM_SCALING_PARAMS, ratio=$PARAM_DATA_RATIO, bpb=$VAL_BPB, CORE=$CORE_SCORE, time=${TRAIN_TIME}s"
 
-    # # Append to CSV
-    # echo "$d,$MODEL_DIM,$NUM_PARAMS,$NUM_SCALING_PARAMS,$NUM_ITERS,$TOKENS_TRAINED,$PARAM_DATA_RATIO,$VAL_BPB,$CORE_SCORE,$TRAIN_TIME" >> "$RESULTS_FILE"
+    # Append to CSV
+    echo "$DEPTH_1,$MODEL_DIM,$NUM_PARAMS,$NUM_SCALING_PARAMS,$NUM_ITERS,$TOKENS_TRAINED,$PARAM_DATA_RATIO,$VAL_BPB,$CORE_SCORE,$TRAIN_TIME" >> "$RESULTS_FILE"
 
     # Stack time --------------------------------------------------------------
 
@@ -137,7 +139,7 @@ for d in "${DEPTHS[@]}"; do
         --g=$G \
         --src-model-tag=$TAG_1 \
         --dest-model-tag=$TAG_2 \
-        2>&1 | tee "$RESULTS_DIR/${TAG_1}_train.log"
+        2>&1 | tee "$RESULTS_DIR/${DEPTH_DESC_1}_${DEPTH_DESC_2}_stacking.log"
 
     if [ ${PIPESTATUS[0]} -ne 0 ]; then
         exit 1
@@ -158,19 +160,21 @@ for d in "${DEPTHS[@]}"; do
         --sample-every=-1 \
         --save-every=-1 \
         $DEVICE_BATCH_SIZE_ARG \
-        2>&1 | tee "$RESULTS_DIR/${TAG_1}_train.log"
+        2>&1 | tee "$RESULTS_DIR/${TAG_2}_train.log"
 
     if [ ${PIPESTATUS[0]} -ne 0 ]; then
-        exit $1
+        exit 1
     fi
 
     END_TIME=$(date +%s)
     TRAIN_TIME=$((END_TIME - START_TIME))
 
     # Extract stats from log
-    LOG_FILE="$RESULTS_DIR/${TAG_1}_train.log"
-    NUM_PARAMS=$(grep "Number of parameters:" "$LOG_FILE" | tail -1 | grep -oP '[\d,]+' | head -1 | tr -d ',')
-    NUM_SCALING_PARAMS=$(grep "Number of parameters:" "$LOG_FILE" | tail -1 | grep -oP 'scaling: [\d,]+' | grep -oP '[\d,]+' | tr -d ',')
+    LOG_FILE="$RESULTS_DIR/${TAG_2}_train.log"
+    NUM_PARAMS=$(grep "Parameter counts:" -A 6 "$LOG_FILE" | grep -oP 'total\s+: [\d,]+' | grep -oP '[\d,]+' | tr -d ',')
+    NUM_LM_HEAD_PARAMS=$(grep "Parameter counts:" -A 6 "$LOG_FILE" | grep -oP 'lm_head\s+: [\d,]+' | grep -oP '[\d,]+' | tr -d ',')
+    NUM_TX_MATRIX_PARAMS=$(grep "Parameter counts:" -A 6 "$LOG_FILE" | grep -oP 'transformer_matrices\s+: [\d,]+' | grep -oP '[\d,]+' | tr -d ',')
+    NUM_SCALING_PARAMS=$((NUM_LM_HEAD_PARAMS + NUM_TX_MATRIX_PARAMS))
     NUM_ITERS=$(grep "Calculated number of iterations" "$LOG_FILE" | tail -1 | sed 's/.*: //' | tr -d ',')
     TOKENS_TRAINED=$((NUM_ITERS * 524288))
     PARAM_DATA_RATIO=$(python -c "print(f'{$TOKENS_TRAINED / $NUM_SCALING_PARAMS:.2f}')")
@@ -182,14 +186,14 @@ for d in "${DEPTHS[@]}"; do
         CORE_SCORE="0.0"
     fi
 
-    log "  d=$d: params=$NUM_PARAMS, scaling=$NUM_SCALING_PARAMS, ratio=$PARAM_DATA_RATIO, bpb=$VAL_BPB, CORE=$CORE_SCORE, time=${TRAIN_TIME}s"
+    log "  d=$DEPTH_2: params=$NUM_PARAMS, scaling=$NUM_SCALING_PARAMS, ratio=$PARAM_DATA_RATIO, bpb=$VAL_BPB, CORE=$CORE_SCORE, time=${TRAIN_TIME}s"
 
     # Append to CSV
-    echo "$d,$MODEL_DIM,$NUM_PARAMS,$NUM_SCALING_PARAMS,$NUM_ITERS,$TOKENS_TRAINED,$PARAM_DATA_RATIO,$VAL_BPB,$CORE_SCORE,$TRAIN_TIME" >> "$RESULTS_FILE"
+    echo "$DEPTH_2,$MODEL_DIM,$NUM_PARAMS,$NUM_SCALING_PARAMS,$NUM_ITERS,$TOKENS_TRAINED,$PARAM_DATA_RATIO,$VAL_BPB,$CORE_SCORE,$TRAIN_TIME" >> "$RESULTS_FILE"
 done
 
 log "=============================================="
-log "${SERIES_NAME} Miniseries Complete!"
+log "${SERIES_NAME} Stackseries Complete!"
 log "=============================================="
 log "Results saved to: $RESULTS_FILE"
 echo ""

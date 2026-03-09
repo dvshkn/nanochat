@@ -229,7 +229,6 @@ def stack_checkpoint(src_checkpoint_dir, dest_checkpoint_dir, device, step=-1, r
             for src_k in src_keys:
                 if src_k in model_data:
                     dest_k = src_k.replace(f'.{src_layer_idx}.', f'.{dest_layer_idx}.')
-                    print(f"{src_k} -- {dest_k}")
                     model_data[dest_k] = model_data[src_k].detach().clone()
 
     # extend layer-dependent vectors
