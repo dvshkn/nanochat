@@ -152,6 +152,8 @@ for d in "${DEPTHS[@]}"; do
 
     torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- \
         --depth=$DEPTH_2 \
+        --target-param-data-ratio=5.5 \
+        --warmdown-ratio=0.96 \
         --resume-from-step=0 \
         --run="${WANDB_RUN}_${DEPTH_DESC_2}" \
         --model-tag="${TAG_2}" \
