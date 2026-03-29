@@ -210,6 +210,11 @@ def stack_checkpoint(src_checkpoint_dir, dest_checkpoint_dir, device, step=-1, r
     )
 
     src_n_layer = meta_data["model_config"]["n_layer"]
+    if src_n_layer % 2 != 0:
+        # alternating value embedding layers makes it problematic to stack
+        # transformers with an odd number of layers
+        log0(f"Cannot stack checkpoint with odd number of layers! (n_layer = {src_n_layer}")
+        return
     log0(f"Stacking transformer from {src_n_layer} to {src_n_layer*g} layers")
 
     for src_layer_idx in range(src_n_layer):

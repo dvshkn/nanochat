@@ -31,8 +31,9 @@ fi
 
 # Series name: from arg, env var, or default to today's date (e.g., jan11)
 SERIES_NAME="${1:-${SERIES_NAME:-$(date +%b%d | tr '[:upper:]' '[:lower:]')}}"
-# Depths to train
-DEPTHS=(12)
+# Data ratios to train with fixed depth, unlike regular miniseries
+d=12
+DATA_RATIOS=(9.5 8.5 7.5 6.5)
 # Hardware
 # NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 NPROC_PER_NODE=1 # For single GPU
@@ -56,7 +57,7 @@ log "=============================================="
 log "${SERIES_NAME} Stackseries Training"
 log "=============================================="
 
-for d in "${DEPTHS[@]}"; do
+for dr in "${DATA_RATIOS[@]}"; do
     # Growth factor `g` from the paper controls how much to stack, doing simple
     # doubling of layers here
     G=2
@@ -68,10 +69,12 @@ for d in "${DEPTHS[@]}"; do
     #             stack to depth 16 and train (future phase)
     #             stack to depth 32 and train (future phase, final depth)
     DEPTH_2=${d}
-    DEPTH_DESC_2="d${DEPTH_2}"
-    TAG_2="${SERIES_NAME}_stackseries_${DEPTH_DESC_2}"
     DEPTH_1=$((d / G))
-    DEPTH_DESC_1="d${DEPTH_1}s${DEPTH_2}"
+    DR_2=6.5
+    DR_1=${dr}
+    DEPTH_DESC_2="sdr${DR_1}bdr${DR_2}d${DEPTH_2}"
+    DEPTH_DESC_1="sdr${DR_1}bdr${DR_2}d${DEPTH_1}s${DEPTH_2}"
+    TAG_2="${SERIES_NAME}_stackseries_${DEPTH_DESC_2}"
     TAG_1="${SERIES_NAME}_stackseries_${DEPTH_DESC_1}"
 
     # Reduce --device-batch-size to avoid OOM at larger depths
@@ -91,7 +94,7 @@ for d in "${DEPTHS[@]}"; do
     torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- \
         --depth=$DEPTH_1 \
         --final-depth=$DEPTH_2 \
-        --target-param-data-ratio=9.5 \
+        --target-param-data-ratio=$DR_1 \
         --run="${WANDB_RUN}_${DEPTH_DESC_1}" \
         --model-tag="${TAG_1}" \
         --core-metric-every=999999 \
@@ -149,8 +152,8 @@ for d in "${DEPTHS[@]}"; do
 
     torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- \
         --depth=$DEPTH_2 \
-        --target-param-data-ratio=6.5 \
-        --warmdown-ratio=0.5 \
+        --target-param-data-ratio=$DR_2 \
+        --warmdown-ratio=1 \
         --resume-from-step=0 \
         --run="${WANDB_RUN}_${DEPTH_DESC_2}" \
         --model-tag="${TAG_2}" \

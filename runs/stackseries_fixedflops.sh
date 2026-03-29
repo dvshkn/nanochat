@@ -31,8 +31,9 @@ fi
 
 # Series name: from arg, env var, or default to today's date (e.g., jan11)
 SERIES_NAME="${1:-${SERIES_NAME:-$(date +%b%d | tr '[:upper:]' '[:lower:]')}}"
-# Depths to train
-DEPTHS=(12)
+# Data ratios to train with fixed depth, unlike regular miniseries
+FINAL_DEPTH=12
+DATA_RATIOS=(5.25 4.25 3.25 2.25 1.25)
 # Hardware
 # NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 NPROC_PER_NODE=1 # For single GPU
@@ -56,7 +57,7 @@ log "=============================================="
 log "${SERIES_NAME} Stackseries Training"
 log "=============================================="
 
-for d in "${DEPTHS[@]}"; do
+for dr in "${DATA_RATIOS[@]}"; do
     # Growth factor `g` from the paper controls how much to stack, doing simple
     # doubling of layers here
     G=2
@@ -67,17 +68,20 @@ for d in "${DEPTHS[@]}"; do
     # d8s16s32 -- train at depth 8
     #             stack to depth 16 and train (future phase)
     #             stack to depth 32 and train (future phase, final depth)
-    DEPTH_2=${d}
-    DEPTH_DESC_2="d${DEPTH_2}"
+    DEPTH_2=${FINAL_DEPTH}
+    DEPTH_1=$((FINAL_DEPTH / G))
+    # Warning: assuming d6->d12 for flop calcs
+    DR_2=$(python -c "print(f'{(9.27e17 - (${dr} * 3.42e17 / 10.5)) * 10.5 / 9.27e17:0.2f}')")
+    DR_1=${dr}
+    DEPTH_DESC_2="sdr${DR_1}bdr${DR_2}d${DEPTH_2}"
+    DEPTH_DESC_1="sdr${DR_1}bdr${DR_2}d${DEPTH_1}s${DEPTH_2}"
     TAG_2="${SERIES_NAME}_stackseries_${DEPTH_DESC_2}"
-    DEPTH_1=$((d / G))
-    DEPTH_DESC_1="d${DEPTH_1}s${DEPTH_2}"
     TAG_1="${SERIES_NAME}_stackseries_${DEPTH_DESC_1}"
 
     # Reduce --device-batch-size to avoid OOM at larger depths
-    if [ $d -ge 28 ]; then
+    if [ $DEPTH_2 -ge 28 ]; then
         DEVICE_BATCH_SIZE_ARG="--device-batch-size=8"
-    elif [ $d -ge 20 ]; then
+    elif [ $DEPTH_2 -ge 20 ]; then
         DEVICE_BATCH_SIZE_ARG="--device-batch-size=16"
     else
         DEVICE_BATCH_SIZE_ARG="--device-batch-size=32"
@@ -91,7 +95,8 @@ for d in "${DEPTHS[@]}"; do
     torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- \
         --depth=$DEPTH_1 \
         --final-depth=$DEPTH_2 \
-        --target-param-data-ratio=9.5 \
+        --target-param-data-ratio=$DR_1 \
+        --warmdown-ratio=0 \
         --run="${WANDB_RUN}_${DEPTH_DESC_1}" \
         --model-tag="${TAG_1}" \
         --core-metric-every=999999 \
@@ -149,8 +154,8 @@ for d in "${DEPTHS[@]}"; do
 
     torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- \
         --depth=$DEPTH_2 \
-        --target-param-data-ratio=6.5 \
-        --warmdown-ratio=0.5 \
+        --target-param-data-ratio=$DR_2 \
+        --warmdown-ratio=1 \
         --resume-from-step=0 \
         --run="${WANDB_RUN}_${DEPTH_DESC_2}" \
         --model-tag="${TAG_2}" \
