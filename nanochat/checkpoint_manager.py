@@ -192,3 +192,63 @@ def load_optimizer_state(source, device, rank, model_tag=None, step=None):
     log0(f"Loading optimizer state from {optimizer_path}")
     optimizer_data = torch.load(optimizer_path, map_location=device)
     return optimizer_data
+
+# -----------------------------------------------------------------------------
+# model growth functions
+
+def stack_checkpoint(src_checkpoint_dir, dest_checkpoint_dir, device, step=-1, rank=0, g=2):
+    # g -- growth factor, controls how many new layers to create
+
+    if step < 0:
+        step = find_last_step(src_checkpoint_dir)
+    model_data, optimizer_data, meta_data = load_checkpoint(
+        src_checkpoint_dir,
+        step,
+        device,
+        load_optimizer=True,
+        rank=rank,
+    )
+
+    src_n_layer = meta_data["model_config"]["n_layer"]
+    if src_n_layer % 2 != 0:
+        # alternating value embedding layers makes it problematic to stack
+        # transformers with an odd number of layers
+        log0(f"Cannot stack checkpoint with odd number of layers! (n_layer = {src_n_layer}")
+        return
+    log0(f"Stacking transformer from {src_n_layer} to {src_n_layer*g} layers")
+
+    for src_layer_idx in range(src_n_layer):
+        src_keys = [
+            f'transformer.h.{src_layer_idx}.attn.c_q.weight',
+            f'transformer.h.{src_layer_idx}.attn.c_k.weight',
+            f'transformer.h.{src_layer_idx}.attn.c_v.weight',
+            f'transformer.h.{src_layer_idx}.attn.c_proj.weight',
+            f'transformer.h.{src_layer_idx}.attn.ve_gate.weight',
+            f'transformer.h.{src_layer_idx}.mlp.c_fc.weight',
+            f'transformer.h.{src_layer_idx}.mlp.c_proj.weight',
+            f'value_embeds.{src_layer_idx}.weight',
+        ]
+        # copy main transformer layers
+        for batch in range(1, g):
+            dest_layer_idx = batch * src_n_layer + src_layer_idx
+            for src_k in src_keys:
+                if src_k in model_data:
+                    dest_k = src_k.replace(f'.{src_layer_idx}.', f'.{dest_layer_idx}.')
+                    model_data[dest_k] = model_data[src_k].detach().clone()
+
+    # extend layer-dependent vectors
+    model_data["resid_lambdas"] = model_data["resid_lambdas"].repeat(g)
+    model_data["x0_lambdas"] = model_data["x0_lambdas"].repeat(g)
+
+    # reset metadata
+    meta_data["step"] = 0
+    meta_data["val_bpb"] = None
+    meta_data["loop_state"]["min_val_bpb"] = 6.02e23 # json does not support infinity
+    meta_data["loop_state"]["smooth_train_loss"] = 0
+    meta_data["loop_state"]["total_training_time"] = 0
+    meta_data["new_stack"] = True
+    # TODO: there are other outdated params in here that should probably be
+    #       zeroed out
+
+    # TODO: have base_train skip the optimizer_data since we already discard it
+    save_checkpoint(dest_checkpoint_dir, 0, model_data, optimizer_data, meta_data)
