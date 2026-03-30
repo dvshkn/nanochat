@@ -82,8 +82,10 @@ for d in "${DEPTHS[@]}"; do
 
     # Extract stats from log
     LOG_FILE="$RESULTS_DIR/${TAG}_train.log"
-    NUM_PARAMS=$(grep "Number of parameters:" "$LOG_FILE" | tail -1 | grep -oP '[\d,]+' | head -1 | tr -d ',')
-    NUM_SCALING_PARAMS=$(grep "Number of parameters:" "$LOG_FILE" | tail -1 | grep -oP 'scaling: [\d,]+' | grep -oP '[\d,]+' | tr -d ',')
+    NUM_PARAMS=$(grep "Parameter counts:" -A 6 "$LOG_FILE" | grep -oP 'total\s+: [\d,]+' | grep -oP '[\d,]+' | tr -d ',')
+    NUM_LM_HEAD_PARAMS=$(grep "Parameter counts:" -A 6 "$LOG_FILE" | grep -oP 'lm_head\s+: [\d,]+' | grep -oP '[\d,]+' | tr -d ',')
+    NUM_TX_MATRIX_PARAMS=$(grep "Parameter counts:" -A 6 "$LOG_FILE" | grep -oP 'transformer_matrices\s+: [\d,]+' | grep -oP '[\d,]+' | tr -d ',')
+    NUM_SCALING_PARAMS=$((NUM_LM_HEAD_PARAMS + NUM_TX_MATRIX_PARAMS))
     NUM_ITERS=$(grep "Calculated number of iterations" "$LOG_FILE" | tail -1 | sed 's/.*: //' | tr -d ',')
     TOKENS_TRAINED=$((NUM_ITERS * 524288))
     PARAM_DATA_RATIO=$(python -c "print(f'{$TOKENS_TRAINED / $NUM_SCALING_PARAMS:.2f}')")
